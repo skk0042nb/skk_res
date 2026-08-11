@@ -12,6 +12,12 @@ jobs:
     - name: Unzip source
       run: unzip -q -o 486.zip
     
+    - name: Verify files
+      run: |
+        ls -la app/
+        ls -la app/src/main/
+        test -f app/src/main/AndroidManifest.xml && echo "Manifest OK" || echo "Manifest MISSING"
+    
     - name: Setup JDK 21
       uses: actions/setup-java@v4
       with:
@@ -32,7 +38,7 @@ jobs:
         cd app
         echo "sdk.dir=$ANDROID_HOME" > ../local.properties
         chmod +x ../gradlew
-        ../gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g"
+        ../gradlew clean assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g"
     
     - name: Upload APK
       uses: actions/upload-artifact@v4
