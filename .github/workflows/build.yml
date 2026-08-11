@@ -8,6 +8,7 @@ on:
       - 'zygisk/**'
       - 'module.prop'
       - '.github/workflows/build.yml'
+      - 'CpuInfoSpoofer.zip'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -31,6 +32,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Extract zip if exists
+        run: |
+          # 如果存在 CpuInfoSpoofer.zip，解压它
+          if [ -f "CpuInfoSpoofer.zip" ]; then
+            echo "Found CpuInfoSpoofer.zip, extracting..."
+            unzip -q CpuInfoSpoofer.zip -d extracted
+            
+            # 检查解压后的结构
+            echo "Extracted files:"
+            ls -la extracted/
+            find extracted/ -maxdepth 2 -type d
+            
+            # 如果解压后有一层多余目录，处理它
+            if [ -d "extracted/CpuInfoSpoofer" ]; then
+              echo "Found nested directory, moving files up..."
+              mv extracted/CpuInfoSpoofer/* .
+              rm -rf extracted
+            else
+              echo "No nested directory, moving files from extracted/"
+              mv extracted/* . 2>/dev/null || true
+              mv extracted/.* . 2>/dev/null || true
+              rm -rf extracted
+            fi
+          else
+            echo "No CpuInfoSpoofer.zip found, using current directory"
+          fi
+          
+          # 显示最终结构
+          echo "Final structure:"
+          ls -la
+          echo "jni directory:"
+          ls -la jni/ 2>/dev/null || echo "jni not found!"
+      
       - name: Download NDK
         run: |
           NDK_VERSION="${{ github.event.inputs.ndk_version || 'r26d' }}"
@@ -39,7 +73,6 @@ jobs:
           
           echo "Downloading NDK ${NDK_VERSION}..."
           
-          # 下载 NDK（使用中科大镜像加速）
           if [ ! -d "$NDK_DIR" ]; then
             wget -q --show-progress \
               "https://dl.google.com/android/repository/${NDK_ZIP}" \
@@ -118,6 +151,73 @@ jobs:
           file libs/arm64-v8a/libcpuinfo_spoofer.so
       
       - name: Prepare module
+        run: |
+          # 查找模块根目录（包含 module.prop 的目录）
+          MODULE_ROOT="."
+          if [ ! -f "module.prop" ]; then
+            MODULE_ROOT=$(find . -name "module.prop" -not -path "*/\.*" | head -1 | xargs dirname 2>/dev/null || echo ".")
+          fi
+          
+          echo "Module root: $MODULE_ROOT"
+          cd "$MODULE_ROOT"
+          
+          # 创建输出目录
+          mkdir -p output/zygisk/arm64-v8a
+          
+          # 复制模块文件
+          cp module.prop output/
+          cp post-fs-data.sh output/
+          cp service.sh output/
+          cp customize.sh output/
+          cp zygisk/config.prop output/zygisk/
+          
+          # 复制编译好的 .so 文件（从 jni 目录查找）
+          SO_FILE=$(find . -path "*/libs/arm64-v8a/libcpuinfo_spoofer.so" | head -1)
+          if [ -n "$SO_FILE" ]; then
+            cp "$SO_FILE" output/zygisk/arm64-v8a/
+            echo "✓ Native library copied from $SO_FILE"
+          else
+            echo "✗ Native library not found!"
+            find . -name "*.so" -type f
+            exit 1
+          fi
+          
+          # 验证
+          ls -la output/zygisk/arm64-v8a/
+          file output/zygisk/arm64-v8a/libcpuinfo_spoofer.so
+          
+          # 打包
+          cd output
+          zip -r ../cpuinfo_spoofer.zip . -x "*.DS_Store"
+          cd ..
+          
+          ls -lh cpuinfo_spoofer.zip
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuinfo_spoofer
+          path: cpuinfo_spoofer.zip
+          retention-days: 30
+      
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: CPU Info Spoofer Build ${{ github.run_number }}
+          tag_name: v${{ github.run_number }}
+          body: |
+            ## CPU Info Spoofer 自动构建版本
+            
+            **Commit:** ${{ github.sha }}
+            **构建时间:** ${{ github.event.head_commit.timestamp }}
+            
+            ### 安装说明
+            1. 下载下面的 `cpuinfo_spoofer.zip`
+            2. 在 Magisk Manager 中安装模块
+            3. 重启设备
+            
+        - name: Prepare module
         run: |
           # 创建模块目录结构
           mkdir -p module/zygisk/arm64-v8a
