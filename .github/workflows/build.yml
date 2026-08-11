@@ -1,0 +1,186 @@
+name: Build CPU Info Spoofer
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'jni/**'
+      - 'zygisk/**'
+      - 'module.prop'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      ndk_version:
+        description: 'NDK Version'
+        required: false
+        default: 'r26d'
+        type: choice
+        options:
+          - r26d
+          - r26b
+          - r25b
+          - r25c
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download NDK
+        run: |
+          NDK_VERSION="${{ github.event.inputs.ndk_version || 'r26d' }}"
+          NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
+          NDK_DIR="$HOME/android-ndk-${NDK_VERSION}"
+          
+          echo "Downloading NDK ${NDK_VERSION}..."
+          
+          # 下载 NDK（使用中科大镜像加速）
+          if [ ! -d "$NDK_DIR" ]; then
+            wget -q --show-progress \
+              "https://dl.google.com/android/repository/${NDK_ZIP}" \
+              -O "/tmp/${NDK_ZIP}" || \
+            wget -q --show-progress \
+              "https://mirrors.ustc.edu.cn/android/repository/${NDK_ZIP}" \
+              -O "/tmp/${NDK_ZIP}" || \
+            curl -L --progress-bar \
+              "https://dl.google.com/android/repository/${NDK_ZIP}" \
+              -o "/tmp/${NDK_ZIP}"
+            
+            echo "Extracting NDK..."
+            unzip -q "/tmp/${NDK_ZIP}" -d $HOME/
+            rm "/tmp/${NDK_ZIP}"
+          fi
+          
+          echo "NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
+          echo "NDK version: $($NDK_DIR/ndk-build --version 2>&1 | head -1)"
+      
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git wget unzip file
+      
+      - name: Build native library
+        working-directory: jni
+        env:
+          NDK_HOME: ${{ env.NDK_HOME }}
+        run: |
+          echo "Building with NDK: $NDK_HOME"
+          
+          # 清理旧构建
+          rm -rf libs obj
+          
+          # 尝试使用 ndk-build
+          if $NDK_HOME/ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=Android.mk \
+            NDK_APPLICATION_MK=Application.mk \
+            -j$(nproc) \
+            V=1; then
+            echo "✓ Build successful with ndk-build"
+          else
+            echo "✗ ndk-build failed, trying direct clang++ compile..."
+            
+            # 直接使用 clang++ 编译（兼容 NDK r25+）
+            TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+            CLANG="$TOOLCHAIN/bin/aarch64-linux-android21-clang++"
+            
+            if [ ! -f "$CLANG" ]; then
+              # NDK r25 及更早版本
+              TOOLCHAIN="$NDK_HOME/toolchains/aarch64-linux-android-4.9/prebuilt/linux-x86_64"
+              CLANG="$TOOLCHAIN/bin/aarch64-linux-android-g++"
+            fi
+            
+            if [ ! -f "$CLANG" ]; then
+              echo "Error: Cannot find suitable compiler"
+              exit 1
+            fi
+            
+            echo "Using compiler: $CLANG"
+            
+            mkdir -p build && cd build
+            "$CLANG" -std=c++11 -Wall -Wextra -fvisibility=hidden -shared -fPIC \
+              -I.. -I"$NDK_HOME/sysroot/usr/include" \
+              ../main.cpp -o libcpuinfo_spoofer.so -llog -ldl
+            
+            mkdir -p ../../libs/arm64-v8a
+            cp libcpuinfo_spoofer.so ../../libs/arm64-v8a/
+            cd ..
+          fi
+          
+          # 验证输出
+          echo "Build output:"
+          ls -la libs/arm64-v8a/
+          file libs/arm64-v8a/libcpuinfo_spoofer.so
+      
+      - name: Prepare module
+        run: |
+          # 创建模块目录结构
+          mkdir -p module/zygisk/arm64-v8a
+          
+          # 复制模块文件
+          cp module.prop module/
+          cp post-fs-data.sh module/
+          cp service.sh module/
+          cp customize.sh module/
+          cp zygisk/config.prop module/zygisk/
+          
+          # 复制编译好的 .so 文件
+          if [ -f "jni/libs/arm64-v8a/libcpuinfo_spoofer.so" ]; then
+            cp jni/libs/arm64-v8a/libcpuinfo_spoofer.so module/zygisk/arm64-v8a/
+            echo "✓ Native library copied"
+          else
+            echo "✗ Native library not found!"
+            ls -la jni/libs/arm64-v8a/ || true
+            exit 1
+          fi
+          
+          # 验证文件
+          ls -la module/zygisk/arm64-v8a/
+          file module/zygisk/arm64-v8a/libcpuinfo_spoofer.so
+      
+      - name: Create module zip
+        run: |
+          cd module
+          zip -r ../cpuinfo_spoofer.zip . -x "*.DS_Store"
+          cd ..
+          ls -lh cpuinfo_spoofer.zip
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuinfo_spoofer_${{ matrix.abi }}
+          path: cpuinfo_spoofer.zip
+          retention-days: 30
+      
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: CPU Info Spoofer Build ${{ github.run_number }}
+          tag_name: v${{ github.run_number }}
+          body: |
+            ## CPU Info Spoofer 自动构建版本
+            
+            **Commit:** ${{ github.sha }}
+            **构建时间:** ${{ github.event.head_commit.timestamp }}
+            
+            ### 安装说明
+            1. 下载下面的 `cpuinfo_spoofer.zip`
+            2. 在 Magisk Manager 中安装模块
+            3. 重启设备
+            
+            ### 重要提示
+            - 请确保已启用 **Zygisk** (Magisk 设置 → Zygisk → 开启)
+            - 首次使用请查看 README.md
+            - 如遇问题请查看 /data/local/tmp/cpuinfo_spoofer.log
+            
+            ### 自动触发
+            此版本由 GitHub Actions 自动编译生成。
+          files: cpuinfo_spoofer.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
