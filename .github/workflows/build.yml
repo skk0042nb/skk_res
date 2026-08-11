@@ -217,7 +217,7 @@ jobs:
             2. 在 Magisk Manager 中安装模块
             3. 重启设备
             
-        - name: Prepare module
+      - name: Prepare module
         run: |
           # 创建模块目录结构
           mkdir -p module/zygisk/arm64-v8a
