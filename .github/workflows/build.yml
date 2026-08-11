@@ -9,8 +9,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Unzip source
-      run: unzip -q -o 486.zip
+    - name: Unzip and fix permissions
+      run: |
+        unzip -q -o 486.zip
+        find app -type d -exec chmod 755 {} +
+        find app -type f -exec chmod 644 {} +
+        chmod +x gradlew
     
     - name: Verify files
       run: |
@@ -37,7 +41,6 @@ jobs:
       run: |
         cd app
         echo "sdk.dir=$ANDROID_HOME" > ../local.properties
-        chmod +x ../gradlew
         ../gradlew clean assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g"
     
     - name: Upload APK
