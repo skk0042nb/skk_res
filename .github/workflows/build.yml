@@ -1,4 +1,4 @@
-name: Build
+name: Build Terminal
 
 on:
   workflow_dispatch:
@@ -9,28 +9,35 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Unzip
+    - name: Unzip source
       run: |
-        apt-get update -qq && apt-get install -y -qq unzip
         rm -rf app
         unzip -q -o 486.zip
     
-    - name: Build
-      uses: android-actions/setup-android@v3
+    - name: Setup JDK 21
+      uses: actions/setup-java@v4
       with:
-        api-level: 35
-        ndk-version: 27.3.13750724
-        cmake-version: 3.31.6
+        java-version: '21'
+        distribution: 'temurin'
     
-    - name: Gradle Build
+    - name: Install Android SDK
+      run: |
+        mkdir -p $ANDROID_HOME/cmdline-tools/latest
+        cd $ANDROID_HOME/cmdline-tools/latest
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q commandlinetools-linux-11076708_latest.zip
+        rm commandlinetools-linux-11076708_latest.zip
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+    
+    - name: Build APK
       run: |
         cd app
         echo "sdk.dir=$ANDROID_HOME" > ../local.properties
         chmod +x ../gradlew
-        ../gradlew assembleDebug --no-daemon
+        ../gradlew clean assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g"
     
-    - name: Upload
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: apk
+        name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
